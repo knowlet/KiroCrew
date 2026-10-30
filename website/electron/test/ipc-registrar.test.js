@@ -1460,7 +1460,10 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   await h.listeners.get("update:notify-policy-governed")(evForeign, true);
   assert.equal(deps.isPolicyGoverned(), false, "foreign origin must not set governance");
 
-  // Destroying the source window must clear governance even without an explicit false.
+  // Keep an ungoverned window open: destroying the last governed source must
+  // clear governance even on macOS, where closing the final app window is a
+  // separate policy-preserving lifecycle (covered below).
+  h.electron.BrowserWindow = { getAllWindows: () => [{}] };
   const ev2 = makeEvent();
   await h.listeners.get("update:notify-policy-governed")(ev2, true);
   assert.equal(deps.isPolicyGoverned(), true, "governance set before destroy");
@@ -1478,7 +1481,7 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   assert.equal(deps.isPolicyGoverned(), true,
     "closing one window must not clear governance while another remains governed");
   evA._destroy(); // close the first window too
-  assert.equal(deps.isPolicyGoverned(), false, "governance clears when all windows close");
+  assert.equal(deps.isPolicyGoverned(), false, "governance clears when all governed windows close");
 
   // Remote-gateway gate: a harness that simulates a non-kirocrew port owner
   // (SSH tunnel holding the primary port) must reject governance via gate 3.
@@ -1525,6 +1528,44 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   });
   assert.equal(h.handlers.get("update:set-auto-download")({}, false).ok, true);
   assert.equal(h.store.data.autoDownloadUpdates, false);
+});
+
+test("updater governance respects the last-window platform lifecycle and explicit clear", async () => {
+  const updater = updaterHandle();
+  let deps;
+  const h = harness({
+    initAutoUpdate(options) { deps = options; return updater; },
+  });
+  let openWindows = [{}];
+  h.electron.BrowserWindow = { getAllWindows: () => openWindows };
+  h.registerUpdater(h.registrar);
+  const notify = h.listeners.get("update:notify-policy-governed");
+  let onDestroyed;
+  const event = {
+    sender: {
+      id: 101,
+      getURL: () => "http://localhost:5476/",
+      once: (name, fn) => { if (name === "destroyed") onDestroyed = fn; },
+    },
+    senderFrame: { url: "http://localhost:5476/" },
+  };
+  await notify(event, true);
+  assert.equal(deps.isPolicyGoverned(), true);
+  const checksBeforeClose = updater.calls.length;
+  openWindows = [];
+  onDestroyed();
+  const preserved = process.platform === "darwin";
+  assert.equal(deps.isPolicyGoverned(), preserved,
+    "macOS keeps policy while alive without windows; other platforms clear it");
+  assert.equal(updater.calls.length, checksBeforeClose + (preserved ? 0 : 1),
+    "closing the last macOS window must not start an ungoverned update check");
+
+  // A reopened local dashboard can explicitly release the retained policy.
+  openWindows = [{}];
+  const reopened = { ...event, sender: { ...event.sender, id: 102 } };
+  await notify(reopened, false);
+  assert.equal(deps.isPolicyGoverned(), false);
+  assert.equal(updater.calls.length, checksBeforeClose + 1);
 });
 
 test("update:set-channel refuses while the policy requires a channel, and hands it to the updater", () => {
