@@ -381,7 +381,12 @@ logged, or fail with none.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
 - **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 32 smoke plus
   8 nightly-only scenarios). A non-PASS night opens or updates the single open
-  issue labelled `gui-test-report`.
+  issue labelled `gui-test-report`. When repository issues are explicitly disabled,
+  issue filing is skipped and the report remains in the run summary and artifacts;
+  an unreadable or invalid issues capability response still fails reporting.
+  Missing harness summaries report the observed boot, credential and harness
+  outcomes rather than assuming a boot failure. This reporting fallback does not
+  skip execution or change the lane verdict: missing results still fail the lane.
 
 ### Locally
 
@@ -462,3 +467,4 @@ and the harness assumes `GUI_TEST_BEDROCK_ROLE_ARN` when set, else
 `SHIP_REPORT_BEDROCK_ROLE_ARN` (`bedrock:InvokeModel` only); the review lanes'
 `AWS_BEDROCK_ROLE_ARN` is not used (see "The model and the tool shape" above). Fork
 pull requests never run the lane.
+

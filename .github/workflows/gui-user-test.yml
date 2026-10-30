@@ -198,7 +198,8 @@ jobs:
       # browser the model drives never inherit AWS_* from the job environment,
       # so nothing the model can reach through the browser holds the role's
       # credentials. Only the harness step (boto3 -> Bedrock) runs with them.
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - id: credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: steps.boot.outcome == 'success'
         with:
           role-to-assume: ${{ env.ROLE_ARN }}
@@ -400,6 +401,17 @@ jobs:
           [ -f "$ledger" ] || { echo "no ledger tonight"; exit 0; }
           [ -f "$GUI_OUT/results/friction.json" ] || {
             echo "the harness did not run tonight (no friction.json); nothing to file"; exit 0; }
+          issues_enabled="$(gh api "repos/$REPO" --jq '.has_issues')" || {
+            echo "::error::Could not determine whether repository issues are enabled"; exit 1;
+          }
+          case "$issues_enabled" in
+            false)
+              echo "Repository issues are disabled; report retained in the run summary and artifacts." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            true) ;;
+            *) echo "::error::Invalid repository has_issues response"; exit 1 ;;
+          esac
           rc=0
           python test/gui_user/friction.py issues --ledger "$ledger" --repo "$REPO" --date "$DATE" \
             --artifact-url "$ARTIFACT_URL" --friction "$GUI_OUT/results/friction.json" || rc=$?
@@ -416,6 +428,9 @@ jobs:
         id: summary
         if: always()
         env:
+          BOOT_OUTCOME: ${{ steps.boot.outcome }}
+          CREDENTIAL_OUTCOME: ${{ steps.credentials.outcome }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
         run: |
@@ -432,7 +447,11 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             verdict="ERROR"
-            echo "## GUI user test — ERROR (no summary.json: the target did not boot or the harness crashed)" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## GUI user test — ERROR (no summary.json)"
+              printf '\nObserved outcomes: boot=%s; credentials=%s; harness=%s.\n' "$BOOT_OUTCOME" "$CREDENTIAL_OUTCOME" "$RUN_OUTCOME"
+              printf '\nSee the [workflow run](%s) for the failing step.\n' "$RUN_URL"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -f "$GUI_OUT/results/features.md" ]; then
             {
@@ -452,6 +471,9 @@ jobs:
       - name: File or update the nightly report issue
         if: always() && github.event_name == 'schedule' && steps.summary.outputs.verdict != 'PASS'
         env:
+          BOOT_OUTCOME: ${{ steps.boot.outcome }}
+          CREDENTIAL_OUTCOME: ${{ steps.credentials.outcome }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -469,9 +491,20 @@ jobs:
             python test/gui_user/report.py --summary "$summary" --format issue-body --head-sha "$SHA" \
               --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" ${friction_args[@]+"${friction_args[@]}"} > "$body_file"
           else
-            echo "Nightly GUI user test ERROR: target did not boot" > "$title_file"
-            printf 'The nightly agentic GUI user test produced no summary at `%s`: the target did not boot or the harness crashed.\n\nSee the [workflow run](%s).\n\nLane: `.github/workflows/gui-user-test.yml` · tracking: #9578\n' "$SHA" "$RUN_URL" > "$body_file"
+            echo "Nightly GUI user test ERROR: no summary.json" > "$title_file"
+            printf 'The nightly agentic GUI user test produced no summary at `%s`: no harness summary was produced.\n\nObserved outcomes: boot=%s; credentials=%s; harness=%s.\n\nSee the [workflow run](%s).\n\nLane: `.github/workflows/gui-user-test.yml` · tracking: #9578\n' "$SHA" "$BOOT_OUTCOME" "$CREDENTIAL_OUTCOME" "$RUN_OUTCOME" "$RUN_URL" > "$body_file"
           fi
+          issues_enabled="$(gh api "repos/$REPO" --jq '.has_issues')" || {
+            echo "::error::Could not determine whether repository issues are enabled"; exit 1;
+          }
+          case "$issues_enabled" in
+            false)
+              echo "Repository issues are disabled; report retained in the run summary and artifacts." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            true) ;;
+            *) echo "::error::Invalid repository has_issues response"; exit 1 ;;
+          esac
           gh label create gui-test-report --repo "$REPO" --color B60205 \
             --description "Nightly agentic GUI user-test failure report" --force >/dev/null 2>&1 || true
           existing="$(gh issue list --repo "$REPO" --label gui-test-report --state open --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
@@ -516,3 +549,4 @@ jobs:
           fi
           echo "::error::GUI user test $VERDICT (harness outcome: $RUN_OUTCOME); see the run summary and artifact"
           exit 1
+
