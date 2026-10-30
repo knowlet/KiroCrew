@@ -374,7 +374,12 @@ Out-of-band lanes that never gate a PR:
   the branch is enough. The push happens first either way, so a refusal is a
   handoff, not a loss: the job stays green and files/updates one issue titled
   "Add Contributor needs a human to open the contributors PR" carrying the compare
-  link. Both the handoff and failure notification steps also write the run link\n  to the job summary; the handoff includes the compare link. If the repository\n  explicitly reports `has_issues=false`, they retain that summary and skip issue\n  API calls. Metadata lookup errors, malformed responses and issue API failures\n  still fail, and a successful failure notification never clears an earlier\n  failed step. The same limitation applies to every workflow here that opens a PR
+  link. Both the handoff and failure notification steps also write the run link
+  to the job summary; the handoff includes the compare link. If the repository
+  explicitly reports `has_issues=false`, they retain that summary and skip issue
+  API calls. Metadata lookup errors, malformed responses and issue API failures
+  still fail, and a successful failure notification never clears an earlier
+  failed step. The same limitation applies to every workflow here that opens a PR
   (`test-durations.yml`, `memory-benchmark.yml`), which carry the same guard in a
   lighter form: they emit a `::notice::` with the compare link and exit 0 rather
   than filing an issue, because their branches are regenerated on the next
