@@ -26,7 +26,8 @@ name: Add Contributor
 # approve pull requests" is off, which is a defensible setting because the same
 # switch also grants APPROVING, and main's merge gate is a required review). The
 # push always succeeds, so when `gh pr create` is refused the job keeps the run
-# green and raises a handoff issue with a one-click compare link instead. Do not
+# green and records a one-click compare link in the job summary, plus a handoff
+# issue when issues are enabled. Do not
 # "fix" that by making the step fail again -- it did, daily, unnoticed for weeks.
 #
 # Trigger choice: a daily cron (plus manual dispatch), NOT pull_request_target.
@@ -424,6 +425,22 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          printf '## Add Contributor notification\n\nRun: %s\n' "$RUN_URL" >>"$GITHUB_STEP_SUMMARY"
+          if [ -n "${COMPARE_URL:-}" ]; then
+            printf '\nManual PR handoff: %s\n' "$COMPARE_URL" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          has_issues="$(gh api "repos/$REPO" --jq '.has_issues')"
+          case "$has_issues" in
+            false)
+              echo "::notice::Issues are disabled; notification retained in the job summary."
+              exit 0
+              ;;
+            true) ;;
+            *)
+              echo "::error::Unexpected has_issues value; cannot decide notification availability."
+              exit 1
+              ;;
+          esac
           TITLE="Add Contributor needs a human to open the contributors PR"
           note="The \`chore/add-contributors\` branch is pushed with new README entries, but this repository does not allow GitHub Actions to open pull requests, so the job could not create it.
 
@@ -452,6 +469,22 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          printf '## Add Contributor notification\n\nRun: %s\n' "$RUN_URL" >>"$GITHUB_STEP_SUMMARY"
+          if [ -n "${COMPARE_URL:-}" ]; then
+            printf '\nManual PR handoff: %s\n' "$COMPARE_URL" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          has_issues="$(gh api "repos/$REPO" --jq '.has_issues')"
+          case "$has_issues" in
+            false)
+              echo "::notice::Issues are disabled; notification retained in the job summary."
+              exit 0
+              ;;
+            true) ;;
+            *)
+              echo "::error::Unexpected has_issues value; cannot decide notification availability."
+              exit 1
+              ;;
+          esac
           TITLE="Add Contributor workflow is failing"
           existing="$(gh issue list --repo "$REPO" --state open --search "in:title \"$TITLE\"" \
             --json number --jq '.[0].number // empty')"
@@ -465,3 +498,4 @@ jobs:
           else
             gh issue create --repo "$REPO" --title "$TITLE" --body "$body"
           fi
+
