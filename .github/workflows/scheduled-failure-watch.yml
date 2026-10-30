@@ -8,7 +8,8 @@ name: Scheduled Failure Watch
 # workflow was silent when red. This one watcher replaces the per-workflow copy:
 # it listens for the completion of every listed scheduled workflow and, when the
 # run was a SCHEDULED one that failed or timed out, opens (or bumps) ONE fixed-title
-# tracking issue per source workflow so a human actually sees it.
+# tracking issue per source workflow so a human actually sees it. Repositories
+# with issues disabled retain the source failure and run link in the job summary.
 #
 # WHY `workflow_run` AND NOT A STEP IN EACH WORKFLOW: the failure-surfacing
 # step must run after everything else and must exist in every scheduled
@@ -64,8 +65,9 @@ name: Scheduled Failure Watch
 #   - GUI User Test        -- "File or update the nightly report issue"
 #
 # PERMISSIONS: `issues: write` only. The watcher never checks out code and
-# never reads the source run's artifacts; everything it needs is in the event
-# payload. `issues: write` implies the read that `gh issue list` needs.
+# never reads the source run's artifacts. Source details come from the event
+# payload; repository metadata supplies the issue capability. `issues: write`
+# implies the read that `gh issue list` needs.
 #
 # RUNNER: `ubuntu-latest`. A `workflow_run` completion has no live collaborator
 # actor for the AWS webhook allowlist to check, so it cannot route to the
@@ -148,6 +150,22 @@ jobs:
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           set -euo pipefail
+          # A notification result is not the source workflow's result.
+          printf '## Scheduled workflow failure\n\nSource: %s\n\nConclusion: %s\n\nRun: %s\n' \
+            "$SOURCE_NAME" "$SOURCE_CONCLUSION" "$RUN_URL" >>"$GITHUB_STEP_SUMMARY"
+          has_issues="$(gh api "repos/$REPO" --jq '.has_issues')"
+          case "$has_issues" in
+            false)
+              printf '\nIssues are disabled; no tracking issue was filed. The source run remains failed or timed out.\n' >>"$GITHUB_STEP_SUMMARY"
+              echo "::notice::Issues are disabled; source failure retained in the job summary."
+              exit 0
+              ;;
+            true) ;;
+            *)
+              echo "::error::Unexpected has_issues value; cannot decide notification availability."
+              exit 1
+              ;;
+          esac
           export TITLE="$SOURCE_NAME scheduled run is failing"
           # One 6-hour window governs both bumps and re-filing after a close.
           # `SINCE` is exported for the jq filters below; the issues API compares

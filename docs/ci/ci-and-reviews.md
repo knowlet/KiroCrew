@@ -432,6 +432,14 @@ progress (GitHub evicts an older *pending* run when a newer one queues, which
 costs nothing: the newest completion still runs after the incumbent and finds
 its issue).
 
+Every notification attempt first records the source workflow, its failure or
+timeout conclusion, and its run link in the job summary. If repository metadata
+explicitly reports `has_issues: false`, the watcher keeps that summary and skips
+issue operations without changing repository settings. A successful summary-only
+notification does **not** mean the source run passed or a tracking issue exists.
+Failed metadata reads, unexpected capability values, and issue query/write errors
+still fail the watcher; they are not treated as disabled issues.
+
 The rule for a new `schedule:` workflow is one line: add its `name:` to the
 watcher's `workflows:` list. Three scheduled workflows are deliberately NOT
 listed because each already files its own issue on failure and watching them too

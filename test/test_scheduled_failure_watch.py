@@ -244,7 +244,7 @@ def _step_script() -> str:
 
 def _dedupe_selector() -> str:
     """The ``--jq`` expression the step hands ``gh issue list``."""
-    match = re.search(r"--jq '([^']+)'", _step_script())
+    match = re.search(r"gh issue list[\s\S]*?--jq '([^']+)'", _step_script())
     assert match, "the dedupe step no longer passes a --jq selector; update this test"
     return match.group(1)
 
@@ -291,9 +291,14 @@ def _run_step(
     label_exit: int = 0,
     comments_json: str = "[]",
     conclusion: str = "failure",
+    has_issues: str = "true",
+    metadata_exit: int = 0,
+    write_exit: int = 0,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     """Run the step with a ``gh`` stub.
 
+    Repository metadata answers ``has_issues`` (or exits ``metadata_exit``);
+    issue writes exit ``write_exit``.
     ``issue list --state open`` answers ``open_reply`` and ``--state closed``
     answers ``closed_reply`` (both with ``list_exit``); ``label create`` exits
     ``label_exit``; ``api .../comments?since=...`` answers ``comments_json`` and
@@ -309,6 +314,13 @@ def _run_step(
     gh.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s{_RECORD_SEPARATOR}\' "$*" >> "{log}"\n'
+        'if [ "$1 $2" = "api repos/example/repo" ]; then\n'
+        f"  printf '%s' '{has_issues}'\n"
+        f"  exit {metadata_exit}\n"
+        "fi\n"
+        'if [ "$1 $2" = "issue create" ] || [ "$1 $2" = "issue comment" ]; then\n'
+        f"  exit {write_exit}\n"
+        "fi\n"
         'if [ "$1 $2" = "label create" ]; then\n'
         f"  exit {label_exit}\n"
         "fi\n"
@@ -340,10 +352,12 @@ def _run_step(
             "SOURCE_PATH": ".github/workflows/nightly.yml",
             "SOURCE_CONCLUSION": conclusion,
             "RUN_URL": "https://example.invalid/actions/runs/1",
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
         }
     )
     out = subprocess.run(
         ["bash", "-c", _step_script()],
+        timeout=10,
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -373,23 +387,23 @@ pytestmark_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="requires 
 def test_a_first_failure_opens_an_issue_with_the_fixed_title(tmp_path: Path) -> None:
     out, calls = _run_step(tmp_path, open_reply="")
     assert out.returncode == 0, out.stderr
-    assert len(calls) == 4, calls
-    assert calls[0].startswith("label create scheduled-failure --repo example/repo --force")
-    assert calls[1].startswith(
+    assert len(calls) == 5, calls
+    assert calls[1].startswith("label create scheduled-failure --repo example/repo --force")
+    assert calls[2].startswith(
         "issue list --repo example/repo --state open --label scheduled-failure --limit 100"
     )
-    assert "--json number,title --jq" in calls[1]
-    assert calls[2].startswith(
+    assert "--json number,title --jq" in calls[2]
+    assert calls[3].startswith(
         "issue list --repo example/repo --state closed --label scheduled-failure --limit 100"
     )
-    assert "--json number,title,closedAt" in calls[2]
-    assert calls[3].startswith(
+    assert "--json number,title,closedAt" in calls[3]
+    assert calls[4].startswith(
         "issue create --repo example/repo --title Nightly Build scheduled run is failing"
     )
-    assert "--label scheduled-failure" in calls[3]
-    assert ".github/workflows/nightly.yml" in calls[3]
-    assert "conclusion `failure`" in calls[3]
-    assert "https://example.invalid/actions/runs/1" in calls[3]
+    assert "--label scheduled-failure" in calls[4]
+    assert ".github/workflows/nightly.yml" in calls[4]
+    assert "conclusion `failure`" in calls[4]
+    assert "https://example.invalid/actions/runs/1" in calls[4]
 
 
 def test_the_dedupe_lookup_never_goes_through_the_search_index() -> None:
@@ -409,13 +423,13 @@ def test_the_dedupe_lookup_never_goes_through_the_search_index() -> None:
 def test_a_repeat_failure_comments_instead_of_opening_a_second_issue(tmp_path: Path) -> None:
     out, calls = _run_step(tmp_path, open_reply="4242", conclusion="timed_out")
     assert out.returncode == 0, out.stderr
-    assert len(calls) == 4, calls
-    assert calls[2].startswith("api repos/example/repo/issues/4242/comments?since=")
-    assert "&per_page=100" in calls[2]
-    assert calls[3].startswith(
+    assert len(calls) == 5, calls
+    assert calls[3].startswith("api repos/example/repo/issues/4242/comments?since=")
+    assert "&per_page=100" in calls[3]
+    assert calls[4].startswith(
         "issue comment 4242 --repo example/repo --body Still failing (timed_out):"
     )
-    assert "https://example.invalid/actions/runs/1" in calls[3]
+    assert "https://example.invalid/actions/runs/1" in calls[4]
     assert not any(call.startswith("issue create") for call in calls)
 
 
@@ -426,8 +440,8 @@ def test_a_bump_within_six_hours_is_skipped(tmp_path: Path) -> None:
     persistent break appends ~144 comments a day and buries the run links."""
     out, calls = _run_step(tmp_path, open_reply="4242", comments_json=json.dumps([_bot_bump()]))
     assert out.returncode == 0, out.stderr
-    assert len(calls) == 3, calls
-    assert calls[2].startswith("api repos/example/repo/issues/4242/comments?since=")
+    assert len(calls) == 4, calls
+    assert calls[3].startswith("api repos/example/repo/issues/4242/comments?since=")
     assert not any(call.startswith("issue comment") for call in calls)
     assert not any(call.startswith("issue create") for call in calls)
     assert "not bumping again" in out.stdout
@@ -465,8 +479,8 @@ def test_an_issue_closed_within_six_hours_is_not_refiled(tmp_path: Path) -> None
 def test_the_throttle_window_is_a_real_timestamp(tmp_path: Path) -> None:
     out, calls = _run_step(tmp_path, open_reply="4242", comments_json=json.dumps([_bot_bump()]))
     assert out.returncode == 0, out.stderr
-    since = re.search(r"since=([^&]+)&", calls[2])
-    assert since, calls[2]
+    since = re.search(r"since=([^&]+)&", calls[3])
+    assert since, calls[3]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", since.group(1)), since.group(1)
 
 
@@ -488,6 +502,50 @@ def test_a_failed_dedupe_query_aborts_instead_of_filing_blind(tmp_path: Path) ->
     not fall through to ``gh issue create`` and open a duplicate."""
     out, calls = _run_step(tmp_path, open_reply="", list_exit=1)
     assert out.returncode != 0
-    assert len(calls) == 2, calls
-    assert calls[0].startswith("label create")
-    assert calls[1].startswith("issue list")
+    assert len(calls) == 3, calls
+    assert calls[1].startswith("label create")
+    assert calls[2].startswith("issue list")
+
+
+@pytestmark_posix
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out"])
+def test_disabled_issues_preserve_source_failure_without_issue_calls(
+    tmp_path: Path, conclusion: str
+) -> None:
+    out, calls = _run_step(tmp_path, open_reply="", has_issues="false", conclusion=conclusion)
+    assert out.returncode == 0, out.stderr
+    assert calls == ["api repos/example/repo --jq .has_issues"]
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Nightly Build" in summary
+    assert f"Conclusion: {conclusion}" in summary
+    assert "https://example.invalid/actions/runs/1" in summary
+    assert "no tracking issue was filed" in summary
+    assert "source run remains failed or timed out" in summary
+
+
+@pytestmark_posix
+@pytest.mark.parametrize("has_issues", ["", "null", "unknown"])
+def test_unknown_issue_capability_fails_closed(tmp_path: Path, has_issues: str) -> None:
+    out, calls = _run_step(tmp_path, open_reply="", has_issues=has_issues)
+    assert out.returncode != 0
+    assert calls == ["api repos/example/repo --jq .has_issues"]
+    assert "Unexpected has_issues value" in out.stdout
+    assert "https://example.invalid/actions/runs/1" in (tmp_path / "summary.md").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytestmark_posix
+def test_metadata_query_failure_is_not_treated_as_disabled(tmp_path: Path) -> None:
+    out, calls = _run_step(tmp_path, open_reply="", metadata_exit=23)
+    assert out.returncode == 23
+    assert calls == ["api repos/example/repo --jq .has_issues"]
+
+
+@pytestmark_posix
+@pytestmark_jq
+@pytest.mark.parametrize("open_reply", ["", "4242"])
+def test_issue_write_failure_stays_red(tmp_path: Path, open_reply: str) -> None:
+    out, calls = _run_step(tmp_path, open_reply=open_reply, write_exit=19)
+    assert out.returncode == 19
+    assert any(call.startswith(("issue create", "issue comment")) for call in calls)
