@@ -122,6 +122,18 @@ def _prove_planted_vector_fires(repo: Path, marker: Path, *args: str) -> None:
     marker.unlink()
 
 
+def _rearm_post_index_change(repo: Path) -> None:
+    """Make status rewrite a tracked stat entry without changing its content.
+
+    An untracked file alone need not rewrite the index. Toggle between two
+    old whole-second mtimes, including after the positive control has refreshed
+    the index, so both probes actually exercise the post-index-change hook.
+    """
+    tracked = repo / "a.txt"
+    stamp = 2 if tracked.stat().st_mtime_ns == 1_000_000_000 else 1
+    os.utime(tracked, (stamp, stamp))
+
+
 # ---------------------------------------------------------------- shared helper
 
 
@@ -574,14 +586,22 @@ class TestDashboardFileDiff:
         return json.loads(resp.body)
 
     @pytest.mark.asyncio
-    async def test_fixed_key_programs_and_hooks_do_not_run(self, tmp_path):
+    @pytest.mark.parametrize("warm_index", [False, True], ids=["fresh-index", "warm-index"])
+    async def test_fixed_key_programs_and_hooks_do_not_run(self, tmp_path, warm_index):
         marker, prog = _marker_programs(tmp_path)
         repo = _repo(tmp_path / "r")
+        if warm_index:
+            # A stable, already-refreshed index must not make this test inert.
+            for tracked in (repo / "a.txt", repo / "website" / "index.js"):
+                os.utime(tracked, (1, 1))
+            _g(repo, "status", "--porcelain")
         _plant(repo, prog, drivers=False)
         # Untracked, so the handler reaches its `git status` probe.
         (repo / "new.txt").write_text("two\n")
         # The editor's own `-c` flags pin fsmonitor; hooks were the open half.
+        _rearm_post_index_change(repo)
         _prove_planted_vector_fires(repo, marker, "-c", "core.fsmonitor=", "status", "--porcelain")
+        _rearm_post_index_change(repo)
 
         body = await self._diff(repo / "new.txt")
         assert body["status"] == "untracked"
@@ -1115,3 +1135,4 @@ def test_file_diff_builds_its_git_env_off_the_event_loop(monkeypatch, tmp_path):
     (repo / "a.txt").write_text("two\n")
     asyncio.run(TestDashboardFileDiff._diff(repo / "a.txt"))
     assert seen and all(t != loop_thread for t in seen), (seen, loop_thread)
+
