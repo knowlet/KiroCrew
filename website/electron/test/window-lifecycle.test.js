@@ -1120,6 +1120,7 @@ describe("dashboard window wiring order", () => {
     assert.deepEqual(events, [
       "view.on:did-finish-load",
       "win.on:swipe",
+      "view.on:input-event",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",
@@ -1170,6 +1171,7 @@ describe("dashboard window wiring order", () => {
       "win.on:system-context-menu",
     ]);
     assert.ok(!wiring.some((entry) => entry.startsWith("win.setWindowButtonPosition")));
+    assert.ok(!wiring.includes("view.on:input-event"), "scroll-touch phase relay is macOS only");
     assert.equal(onLoad[1], "win.setTitle:Kiro Crew", "the default local port is omitted on Windows");
     assert.equal(onLoad[2], "view.insertCSS:#electron-drag-bar {");
   });
@@ -1178,6 +1180,7 @@ describe("dashboard window wiring order", () => {
     const { wiring, onLoad, win } = await wireDashboardWindow(t, { platform: "linux", frameless: true });
     assert.equal(wiring[0], "new WebContentsView:[\"--kc-linux-frameless\"]");
     assert.ok(!wiring.includes("view.on:zoom-changed"), "zoom tracking is macOS/Windows only");
+    assert.ok(!wiring.includes("view.on:input-event"), "scroll-touch phase relay is macOS only");
     assert.deepEqual(onLoad, [
       "view.send:fullscreen-changed",
       "win.setTitle:Kiro Crew [:5476]",
