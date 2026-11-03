@@ -4550,6 +4550,15 @@ The measures from decision D8 of
 add two groups. Both print every rate beside its raw counts, so a reader sees the
 denominator move.
 
+
+An empty merged-PR search still fails closed when local history contains PR
+merge evidence. A fork can inherit that evidence from its upstream: only when
+repository metadata verifies the target is a fork and the complete REST closed-PR
+listing contains no merged PRs is that empty result accepted. Missing metadata,
+malformed or incomplete responses, pagination failures, and any owner merged PR
+retain the failure. This narrow exception does not attribute inherited PR numbers
+to the fork or change workflow permissions or model execution.
+
 ### `pr_counters`: no API call of their own
 
 These read the merged-PR list that the `harvest` group already fetches (three more
@@ -5176,3 +5185,4 @@ resists this:
 
 The net effect: expensive or irreversible risk blocks, and everything else is advice a
 human can take or defer. "More mechanism" is deliberately not a demand that can block.
+

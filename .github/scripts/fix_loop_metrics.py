@@ -428,6 +428,42 @@ def _local_pr_evidence(since_iso: str) -> bool | None:
 PR_LIST_FIELDS = "number,title,body,mergedAt,createdAt,changedFiles,author,baseRefName,headRefOid"
 
 
+def _fork_without_merged_prs(repo: str) -> bool:
+    """Verify a never-merged fork independently of the PR search index.
+
+    Inherited upstream merge subjects are not evidence of PRs in this fork.
+    REST failures and incomplete payloads must not turn into an empty result.
+    Only a complete, explicitly unmerged closed-PR listing permits the exception.
+    """
+    metadata = gh_json("api", f"repos/{repo}")
+    if not isinstance(metadata, dict) or metadata.get("fork") is not True:
+        return False
+    if str(metadata.get("full_name", "")).casefold() != repo.casefold():
+        return False
+    pages = gh_json(
+        "api", f"repos/{repo}/pulls?state=closed&per_page=100", "--paginate", "--slurp"
+    )
+    if not isinstance(pages, list) or not pages:
+        raise RuntimeError("cannot verify fork merged PRs: missing REST pages")
+    for page in pages:
+        if not isinstance(page, list):
+            raise RuntimeError("cannot verify fork merged PRs: invalid REST page")
+        for pr in page:
+            if not isinstance(pr, dict) or "merged_at" not in pr:
+                raise RuntimeError("cannot verify fork merged PRs: incomplete PR")
+            base = pr.get("base")
+            target = base.get("repo") if isinstance(base, dict) else None
+            if (
+                pr.get("state") != "closed"
+                or not isinstance(target, dict)
+                or str(target.get("full_name", "")).casefold() != repo.casefold()
+            ):
+                raise RuntimeError("cannot verify fork merged PRs: wrong target or state")
+            if pr["merged_at"] is not None:
+                return False
+    return True
+
+
 def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
     """Every PR merged at or after since_iso, one search per calendar day.
 
@@ -477,7 +513,7 @@ def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
         # erroring, so a permissions gap looks exactly like a quiet week --
         # and this metric's whole contract is to never publish that.
         evidence = _local_pr_evidence(since_iso)
-        if evidence:
+        if evidence and not _fork_without_merged_prs(repo):
             raise RuntimeError(
                 f"gh pr list returned zero merged PRs since {since_iso}, yet the "
                 "checkout's own history shows commits that merged through PRs. "
