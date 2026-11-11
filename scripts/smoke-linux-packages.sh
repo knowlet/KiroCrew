@@ -56,8 +56,8 @@ RPM_NAME="$(resolve_one rpm)"
 ABS_DIST="$(cd "$DIST_DIR" && pwd)"
 
 # Shared assertions, run inside the container after the package manager has
-# installed the package. `$1` is the command that lists the package's own files
-# (`dpkg -L <pkg>` / `rpm -ql <pkg>`).
+# installed the package. The list-files command is the only caller-controlled
+# fragment (dpkg -L "$pkg" / rpm -ql "$pkg"); everything else is fixed.
 #
 # EVERY identity is DERIVED from that list rather than written here, because the
 # nightly channel deliberately ships different ones so it can sit beside stable:
@@ -68,12 +68,21 @@ ABS_DIST="$(cd "$DIST_DIR" && pwd)"
 # that would silently skip nightly's entire Linux publication. What is asserted
 # is the INVARIANT, not one channel's names.
 common_asserts() {
-  cat <<ASSERTS
-    files=\$($1)
-    entry=\$(printf '%s\\n' "\$files" | grep -E '^/usr/share/applications/[^/]+[.]desktop\$' | head -1)
-    stamp=\$(printf '%s\\n' "\$files" | grep -E '/kiro_crew/_build_info[.]py\$' | head -1)
-    test -n "\$entry" && test -f "\$entry"
-    test -n "\$stamp"
+  local list_cmd="$1"
+  case "$list_cmd" in
+    'dpkg -L "$pkg"' | 'rpm -ql "$pkg"') ;;
+    *)
+      echo "ERROR: unsupported list command for smoke asserts: $list_cmd" >&2
+      return 1
+      ;;
+  esac
+  local body
+  body=$(cat <<'ASSERTS'
+    files=$(__LIST_CMD__)
+    entry=$(printf '%s\n' "$files" | grep -E '^/usr/share/applications/[^/]+[.]desktop$' | head -1)
+    stamp=$(printf '%s\n' "$files" | grep -E '/kiro_crew/_build_info[.]py$' | head -1)
+    test -n "$entry" && test -f "$entry"
+    test -n "$stamp"
     # The identity comes from the desktop entry's FILENAME, not from parsing its
     # Exec value. linux.syncDesktopName ties four things to one name -- the entry
     # filename, executableName, Electron's app_id and StartupWMClass -- so the
@@ -81,23 +90,26 @@ common_asserts() {
     #
     # Exec is deliberately NOT the source: electron-builder quotes that path when
     # it contains a character outside [/0-9A-Za-z._-], which the nightly channel's
-    # `/opt/KiroCrew Nightly/...` does. Parsing it would work on stable and return
+    # /opt/KiroCrew Nightly/... does. Parsing it would work on stable and return
     # empty on nightly -- the third time this gate assumed stable's shape.
-    exe=\$(basename "\$entry" .desktop)
-    launcher=/usr/bin/\$exe
-    test -x "\$launcher"
+    exe=$(basename "$entry" .desktop)
+    launcher=/usr/bin/$exe
+    test -x "$launcher"
     # Window association: StartupWMClass must equal Electron's app_id, which
     # electron-builder derives from desktopName -- the same value the launcher
     # name follows. A mismatch leaves the running window unassociated with its
     # launcher icon, silently, at runtime.
-    grep -q "^StartupWMClass=\${exe}\$" "\$entry"
+    grep -q "^StartupWMClass=${exe}$" "$entry"
     # Installed under the fixed /opt prefix, which is what makes the AppArmor
     # profile, the PATH launcher and in-place updates durable.
-    grep -qE "^Exec=\\"?/opt/.*/\${exe}" "\$entry"
+    grep -qE "^Exec=\"?/opt/.*/${exe}" "$entry"
     # The bundled CLI that fixed prefix makes reachable -- what an AppImage
-    # cannot offer, and what makes \`kirocrew service install\` usable.
-    printf '%s\\n' "\$files" | grep -qE '/backend-dist/kirocrew-backend/bin/kirocrew\$'
+    # cannot offer, and what makes `kirocrew service install` usable.
+    printf '%s\n' "$files" | grep -qE '/backend-dist/kirocrew-backend/bin/kirocrew$'
 ASSERTS
+)
+  body="${body//__LIST_CMD__/$list_cmd}"
+  printf '%s' "$body"
 }
 
 echo "▶ Installing '${DEB_NAME}' on Ubuntu 24.04 (the t64 release)…"
