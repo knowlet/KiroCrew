@@ -81,7 +81,7 @@ common_asserts() {
     #
     # Exec is deliberately NOT the source: electron-builder quotes that path when
     # it contains a character outside [/0-9A-Za-z._-], which the nightly channel's
-    # `/opt/KiroCrew Nightly/...` does. Parsing it would work on stable and return
+    # /opt/KiroCrew Nightly/... does. Parsing it would work on stable and return
     # empty on nightly -- the third time this gate assumed stable's shape.
     exe=\$(basename "\$entry" .desktop)
     launcher=/usr/bin/\$exe
@@ -101,7 +101,7 @@ ASSERTS
 }
 
 echo "▶ Installing '${DEB_NAME}' on Ubuntu 24.04 (the t64 release)…"
-docker run --rm -v "${ABS_DIST}:/dist:ro" -w /dist ubuntu:24.04 bash -euxc "
+docker run --rm --network host -v "${ABS_DIST}:/dist:ro" -w /dist ubuntu:24.04 bash -euxc "
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   # The package's OWN declared name, so a nightly build (kirocrew-nightly) is
@@ -117,7 +117,7 @@ $(common_asserts 'dpkg -L "$pkg"')
 "
 
 echo "▶ Installing '${RPM_NAME}' on Amazon Linux 2023…"
-docker run --rm -v "${ABS_DIST}:/dist:ro" -w /dist amazonlinux:2023 bash -euxc "
+docker run --rm --network host -v "${ABS_DIST}:/dist:ro" -w /dist amazonlinux:2023 bash -euxc "
   pkg=\$(rpm -qp --queryformat '%{NAME}' './${RPM_NAME}')
   dnf install -y './${RPM_NAME}'
 $(common_asserts 'rpm -ql "$pkg"')
