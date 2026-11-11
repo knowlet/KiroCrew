@@ -49,6 +49,13 @@ class TestCiWiring:
         # silently disables a rule fails in CI instead of shipping green.
         assert "--test" in str(_gate_step().get("run", ""))
 
+    def test_source_gates_checkout_fetches_full_history_for_merge_base(self) -> None:
+        job = yaml.safe_load(FAST_GATE.read_text(encoding="utf-8"))["jobs"]["source-gates"]
+        checkout = next(
+            step for step in job["steps"] if "actions/checkout" in str(step.get("uses", ""))
+        )
+        assert (checkout.get("with") or {}).get("fetch-depth") == 0
+
     def test_the_gate_is_diff_scoped_via_the_base_ref_env(self) -> None:
         # Without the env the script only reports. A step that forgot to export
         # it would print counts and pass every PR.
