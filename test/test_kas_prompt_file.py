@@ -9,6 +9,7 @@ has to do the same: run the agent on KAS's default prompt and say so in a notice
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,7 +68,20 @@ def test_a_prompt_path_that_cannot_expand_runs_on_the_default_prompt(tmp_path):
     assert len(unread) == 1
 
 
-def test_a_disallowed_prompt_path_still_refuses(tmp_path):
+def test_a_disallowed_prompt_path_still_refuses(monkeypatch, tmp_path):
+    # /proc is a POSIX location; on Windows a rooted path inherits a drive.
+    # Use a protected location under a synthetic home on every platform instead.
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    prompt_path = home / ".config" / "gh" / "hosts.yml"
+    spec = {"name": "a", "prompt": prompt_path.as_uri()}
+    with pytest.raises(KasAgentTranslationError) as raised:
+        build_kas_custom_agents(tmp_path, "a", spec, prompt_unread_out=[])
+    assert not isinstance(raised.value, kas_agents.KasPromptFileUnreadable)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pseudo-filesystem path")
+def test_a_pseudo_filesystem_prompt_path_still_refuses(tmp_path):
     spec = {"name": "a", "prompt": "file:///proc/self/environ"}
     with pytest.raises(KasAgentTranslationError) as raised:
         build_kas_custom_agents(tmp_path, "a", spec, prompt_unread_out=[])
