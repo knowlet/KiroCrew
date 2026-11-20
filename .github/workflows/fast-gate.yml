@@ -94,7 +94,6 @@ jobs:
       # script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
           # Full history so resolve_base() can merge-base(COMMENT_HISTORY_BASE_REF,
           # HEAD). With the default depth-1 checkout the resolver still fetches
           # the base SHA, but it arrives as an isolated tip and merge-base falls
