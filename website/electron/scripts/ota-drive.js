@@ -18,10 +18,10 @@
  * Usage:
  *   node scripts/ota-drive.js --cdp 9222 --expect 1.0.1 [--timeout 180]
  *
- * Exit 0 only if the updater reached the "downloaded" state and install was
- * armed and the quit that installs it was dispatched. Verifying the BUNDLE actually swapped is the caller's job (read
- * CFBundleShortVersionString afterwards) -- this script deliberately does not
- * conflate "install dispatched" with "install succeeded".
+ * Exit 0 only if the updater downloaded the release, acknowledged arming
+ * install, and either acknowledged relaunch or disconnected after the
+ * relaunch request was sent. The caller must still verify the on-disk bundle
+ * version; a disconnected renderer does not prove that the app updated.
  */
 const http = require("http");
 
@@ -67,31 +67,75 @@ async function findUpdateTarget(deadline) {
   throw new Error("no renderer exposing window.updateAPI appeared before the timeout");
 }
 
+class EvaluationDisconnected extends Error {}
+
 /** One-shot CDP Runtime.evaluate over a fresh socket (keeps state simple). */
 function evaluate(wsUrl, expression) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
-    const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error("evaluate timed out")); }, 15000);
-    ws.onopen = () => ws.send(JSON.stringify({
-      id: 1,
-      method: "Runtime.evaluate",
-      params: { expression, awaitPromise: true, returnByValue: true },
-    }));
+    let sent = false;
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(result);
+      try { ws.close(); } catch {}
+    };
+    const timer = setTimeout(() => finish(new Error("evaluate timed out")), 15000);
+    ws.onopen = () => {
+      if (settled) return;
+      try {
+        ws.send(JSON.stringify({
+          id: 1,
+          method: "Runtime.evaluate",
+          params: { expression, awaitPromise: true, returnByValue: true },
+        }));
+        sent = true;
+      } catch (error) { finish(error); }
+    };
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.id !== 1) return;
-      clearTimeout(timer);
-      try { ws.close(); } catch {}
-      if (msg.error) { reject(new Error(JSON.stringify(msg.error))); return; }
+      if (msg?.id !== 1) return;
+      if (msg.error) { finish(new Error(JSON.stringify(msg.error))); return; }
       if (msg.result && msg.result.exceptionDetails) {
-        reject(new Error(msg.result.exceptionDetails.text || "evaluate threw"));
+        finish(new Error(msg.result.exceptionDetails.text || "evaluate threw"));
         return;
       }
-      resolve(msg.result && msg.result.result);
+      finish(null, msg.result && msg.result.result);
     };
-    ws.onerror = () => { clearTimeout(timer); reject(new Error("websocket error")); };
+    ws.onerror = (event) => {
+      // Node 24 emits an empty error before close(1006) when an established
+      // peer goes away without a close frame. Let onclose classify that case;
+      // a connection or protocol error is not an expected quit.
+      if (
+        sent && ws.readyState === WebSocket.CLOSED &&
+        event.error instanceof TypeError && event.error.message === ""
+      ) return;
+      finish(new Error(event.error?.message || event.message || "websocket error"));
+    };
+    ws.onclose = (event) => finish(sent
+      ? new EvaluationDisconnected(`CDP socket closed before its reply (code ${event.code})`)
+      : new Error("CDP socket closed before the request was sent"));
   });
+}
+
+async function invokeUpdateAction(wsUrl, action) {
+  let reply;
+  try {
+    reply = await evaluate(wsUrl, `window.updateAPI.${action}()`);
+  } catch (error) {
+    if (action === "relaunch" && error instanceof EvaluationDisconnected) {
+      log(`relaunch response interrupted after send: ${error.message}`);
+      return;
+    }
+    throw new Error(`updateAPI.${action}() failed: ${error.message}`, { cause: error });
+  }
+  if (reply?.value?.ok !== true) {
+    throw new Error(`updateAPI.${action}() not acknowledged: ${reply?.value?.error || "expected { ok: true }"}`);
+  }
 }
 
 // Installs a recorder in the page so update states can be polled. Idempotent:
@@ -123,7 +167,7 @@ async function waitForState(wsUrl, wanted, deadline) {
   throw new Error(`state "${wanted}" not reached before the timeout`);
 }
 
-(async () => {
+async function main() {
   const deadline = Date.now() + TIMEOUT_MS;
   const ws = await findUpdateTarget(deadline);
   await evaluate(ws, RECORDER);
@@ -178,16 +222,18 @@ async function waitForState(wsUrl, wanted, deadline) {
   // (updateAPI.relaunch(): a plain quit whose quit-time install swaps the bundle
   // and brings the app back). That keeps the real quit-time install under test.
   log("arming the install -> updateAPI.install() (nothing quits yet)");
-  await evaluate(ws, "window.updateAPI.install()");
+  await invokeUpdateAction(ws, "install");
 
   log("quitting the way Restart now does -> updateAPI.relaunch() (the quit installs, then the app returns)");
-  await evaluate(ws, "window.updateAPI.relaunch()").catch((e) => {
-    // The app quits mid-call, so a dropped socket here is expected/normal.
-    log(`quit dispatched (socket closed as the app quit: ${e.message})`);
+  await invokeUpdateAction(ws, "relaunch");
+  log("OK: discovery -> consent -> download -> armed -> relaunch requested; verify the on-disk version");
+}
+
+if (require.main === module) {
+  main().then(() => process.exit(0), (e) => {
+    console.error("[ota-drive] FAIL:", e.message);
+    process.exit(1);
   });
-  log("OK: discovery -> consent -> download -> armed -> quit dispatched");
-  process.exit(0);
-})().catch((e) => {
-  console.error("[ota-drive] FAIL:", e.message);
-  process.exit(1);
-});
+}
+
+module.exports = { invokeUpdateAction };
