@@ -68,13 +68,28 @@ def test_a_prompt_path_that_cannot_expand_runs_on_the_default_prompt(tmp_path):
     assert len(unread) == 1
 
 
-def test_a_disallowed_prompt_path_still_refuses(monkeypatch, tmp_path):
+def _prompt_file_uri(path: Path) -> str:
+    """A ``file://`` ref whose path text is *path*, spaces included.
+
+    The reader (``file_uri.file_uri_path_text``) cuts the scheme off and does
+    not percent-decode. ``Path.as_uri()`` encodes a space as ``%20``, which is
+    a different path and sits outside the synthetic home.
+    """
+    return "file:///" + path.as_posix().lstrip("/")
+
+
+@pytest.mark.parametrize(
+    "home_name",
+    ["home", "home with space"],
+    ids=["plain-home", "space-in-home"],
+)
+def test_a_disallowed_prompt_path_still_refuses(monkeypatch, tmp_path, home_name):
     # /proc is a POSIX location; on Windows a rooted path inherits a drive.
     # Use a protected location under a synthetic home on every platform instead.
-    home = tmp_path / "home"
+    home = tmp_path / home_name
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     prompt_path = home / ".config" / "gh" / "hosts.yml"
-    spec = {"name": "a", "prompt": prompt_path.as_uri()}
+    spec = {"name": "a", "prompt": _prompt_file_uri(prompt_path)}
     with pytest.raises(KasAgentTranslationError) as raised:
         build_kas_custom_agents(tmp_path, "a", spec, prompt_unread_out=[])
     assert not isinstance(raised.value, kas_agents.KasPromptFileUnreadable)
